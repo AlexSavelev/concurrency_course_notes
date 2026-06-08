@@ -1,3 +1,4 @@
+# Syllabus курса concurrent programming
 
 ## Арка I. Фундамент
 
