@@ -1,0 +1,5 @@
+.obsidian/*
+!.obsidian/community-plugins.json
+!.obsidian/plugins
+Sandbox.md
+/Drafts
