@@ -6,7 +6,7 @@
 | --- | --------------------------------------------------------------------------------- |
 | 0   | [Glossary](<Glossary.md>)                                                         |
 | 1   | [Networking. Single-threaded server](<Networking. Single-threaded server.md>)     |
-| 2   | [Multithreaded server](<Multithreaded server.md>)                                 |
+| 2   | [Multithreaded server. Mutex](<Multithreaded server. Mutex.md>)                   |
 | 3   | [Condition Variable. Thread Pool](<Condition Variable. Thread Pool.md>)           |
 | 4   | [Spinlock. Atomic. Mutex](<Spinlock. Atomic. Mutex.md>)                           |
 | 5   | [Cache Coherence. MESI. False Sharing](<Cache Coherence. MESI. False Sharing.md>) |
