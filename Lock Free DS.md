@@ -214,6 +214,56 @@ public:
 
 **Можно ли сделать lock-free?** Да. Lock-free `atomic_shared_ptr` реализуем через split counting + `cmpxchg16b` (реализации: `folly::atomic_shared_ptr`, версия Энтони Уильямса в just::thread). Стандарт **разрешает**, но **не требует** lock-free; mainstream-реализации пока берут замок. Связь с темой рекультивации прямая: `atomic_shared_ptr` — это, по сути, рекультивация на счётчиках ссылок, которой можно безопасно освобождать узлы lock-free структур, не вводя hazard pointers, — ценой трафика атомарных счётчиков (тот самый contention, от которого lock-free как раз и страдает под нагрузкой).
 
+#### 5.4.1. Имитация split counting
+
+Учебная (не production) модель, проясняющая, где живёт внешний счётчик, когда гибнет локальная копия и как всё сливается во внутренний.
+
+```cpp
+template <class T> struct ControlBlock { T* data; std::atomic<long> inner{0}; }; // inner МОЖЕТ уходить в минус
+template <class T> struct CountedPtr   { ControlBlock<T>* cb; long external; };  // лежит ЦЕЛИКОМ в атомике (128 бит)
+template <class T> void destroy(ControlBlock<T>* cb) { delete cb->data; delete cb; }
+
+// слить внешний счётчик во внутренний, когда значение покидает атомик:
+template <class T> void merge(CountedPtr<T> old) {
+    long add = old.external - 1;                                   // -1: уходит ссылка самого атомика
+    if (old.cb->inner.fetch_add(add) == -add) destroy(old.cb);     // итог 0 → удалить
+}
+
+// локальная копия (то, что вернул load); при гибели гасит бронь во ВНУТРЕННЕМ счётчике:
+template <class T> struct LocalPtr {
+    ControlBlock<T>* cb;
+    ~LocalPtr() { if (cb->inner.fetch_sub(1) == 1) destroy(cb); }  // стало 0 → удалить
+};
+
+template <class T> class atomic_shared_ptr {
+    std::atomic<CountedPtr<T>> p_;                                 // DCAS-атомик (cmpxchg16b)
+public:
+    LocalPtr<T> load() {
+        CountedPtr<T> old = p_.load(), nw;
+        do { nw = old; ++nw.external; }                            // АТОМАРНО ++external — «бронируем»,
+        while (!p_.compare_exchange_weak(old, nw));                // пока cb ещё в атомике → удалить не успеют
+        return LocalPtr<T>{nw.cb};
+    }
+    void store(T* obj) { merge(p_.exchange({ new ControlBlock<T>{obj}, 1 })); } // старое ушло → слить
+    ~atomic_shared_ptr() { merge(p_.load()); }
+};
+```
+
+Прогон (читатели живут дольше значения в атомике):
+
+```
+create:  external=1, inner=0        // атомик держит 1 ссылку
+A.load:  external 1→2               // A забронировал
+B.load:  external 2→3               // B забронировал
+store:   merge(external=3): inner += 3-1  → inner=2   // external СЛИЛСЯ во inner (= 2 живые копии)
+~A:      inner 2→1
+~B:      inner 1→0 → destroy        // последний удаляет
+```
+
+- **Внешний счётчик** лежит рядом с указателем **внутри атомика** (`CountedPtr`) — поэтому `load` одним DCAS и читает `cb`, и `++external`, закрывая гонку «прочитал указатель → кто-то удалил → инкрементирую труп».
+- **Локальная копия** при разрушении гасит бронь во **внутреннем** счётчике (`inner.fetch_sub(1)`), а не во внешнем (его в атомике может уже не быть).
+- **Слияние:** когда значение покидает атомик (`store`/деструктор), `external` замораживается и переносится в `inner` (`+= external−1`); кто довёл `inner` до 0 — тот и удаляет. Если копия погибла раньше слияния, её `fetch_sub` уводит `inner` в минус (`0→−1`), а слияние сводит обратно к 0 — поэтому `inner` и допускает отрицательные значения.
+
 ## 6. Lock-free очередь (очередь Майкла–Скотта)
 
 Очередь Майкла–Скотта (Michael & Scott, 1996) — классический lock-free FIFO. Два указателя: `head` (откуда снимаем) и `tail` (куда добавляем). Всегда есть **фиктивный узел (dummy node)**, чтобы пустая очередь не была особым случаем.
